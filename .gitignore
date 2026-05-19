@@ -4,3 +4,6 @@ build/
 dist/
 .agents/
 skills-lock.json
+.claude/
+*.spec
+launch.bat
