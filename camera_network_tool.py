@@ -26,7 +26,7 @@ import ctypes
 # 常量
 # ──────────────────────────────────────────────
 APP_NAME = "相机网络配置工具"
-APP_VERSION = "v2.2"
+APP_VERSION = "v2.3"
 
 # 每种设置的候选注册表关键字列表（按优先级排列）
 # 不同网卡驱动可能使用不同的关键字
@@ -64,6 +64,12 @@ SETTING_DEFS = [
         # 优先使用 Rate 类关键字（实际速率控制），其次使用开关类
         "rate_keywords": ["*InterruptModerationRate", "ITR", "InterruptThrottleRate"],
         "onoff_keywords": ["*InterruptModeration"],
+    },
+    {
+        "id": "power_mgmt",
+        "display": "电源管理 (Power Management)",
+        "target_display": "节能已关闭",
+        "type": "power",
     },
 ]
 
@@ -235,6 +241,8 @@ try {
 }
 """
 
+    # PS 脚本已改为内联构建（见 get_power_settings / _set_power_saving）
+
     @staticmethod
     def _fill(cmd, **kw):
         """用 Python 值替换 PS 中的占位符 __KEY__（长 key 优先防 substring 冲突）"""
@@ -362,6 +370,64 @@ try {{
         if rc == 0 and out.strip() == "OK":
             return True, "重命名成功"
         return False, (err or out or "重命名失败")
+
+    @staticmethod
+    def get_power_settings(name):
+        """查询适配器电源管理状态，返回 dict 或 None"""
+        qn = ps_escape_sq(name)
+        script = f"""
+$ErrorActionPreference = 'SilentlyContinue'
+$pm = Get-NetAdapterPowerManagement -Name '{qn}'
+if (-not $pm) {{ exit 1 }}
+@{{
+    AllowComputerToTurnOffDevice = [int]$pm.AllowComputerToTurnOffDevice
+    WakeOnMagicPacket = [int]$pm.WakeOnMagicPacket
+    WakeOnPattern = [int]$pm.WakeOnPattern
+}} | ConvertTo-Json -Compress
+"""
+        out, _, rc = run_ps(script)
+        if rc != 0 or not out:
+            return None
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError:
+            return None
+
+    @staticmethod
+    def _set_power_saving(name, enable):
+        """启用或关闭电源管理"""
+        qn = ps_escape_sq(name)
+        cmd = "Enable" if enable else "Disable"
+        state = "Enabled" if enable else "Disabled"
+        msg = "电源管理已恢复默认" if enable else "电源节能已关闭"
+        err_msg = "恢复失败" if enable else "关闭失败"
+        script = f"""
+$ErrorActionPreference = 'Stop'
+try {{
+    $pm = Get-NetAdapterPowerManagement -Name '{qn}' -ErrorAction Stop
+    $pm.AllowComputerToTurnOffDevice = '{state}'
+    $pm.WakeOnMagicPacket = '{state}'
+    $pm.WakeOnPattern = '{state}'
+    $pm | Set-NetAdapterPowerManagement -NoRestart -ErrorAction Stop
+    if ('{cmd}' -eq 'Enable') {{
+        Enable-NetAdapterPowerManagement -Name '{qn}' -WakeOnMagicPacket -WakeOnPattern -ErrorAction Stop
+    }}
+    Write-Output 'OK'
+}} catch {{
+    Write-Output "ERR: $($_.Exception.Message)"
+    exit 1
+}}
+"""
+        out, err, _ = run_ps(script)
+        status = out.strip()
+        if status == "OK":
+            return True, msg
+        if status.startswith("ERR:"):
+            return False, status[4:].strip()
+        return False, (err or out or err_msg)
+
+    disable_power_saving = lambda n: NetMgr._set_power_saving(n, False)
+    enable_power_saving = lambda n: NetMgr._set_power_saving(n, True)
 
     @staticmethod
     def get_valid_values(name, keyword):
@@ -515,6 +581,8 @@ $r | ConvertTo-Json -Compress
         for sd in SETTING_DEFS:
             if sd["type"] == "extreme":
                 results.extend(NetMgr._check_int_moderation(sd, props, name=name))
+            elif sd["type"] == "power":
+                results.extend(NetMgr._check_power_setting(sd, props, name=name))
             else:
                 results.append(NetMgr._check_int_setting(sd, props))
         return results
@@ -577,6 +645,25 @@ $r | ConvertTo-Json -Compress
         return (label, ok, " | ".join(details))
 
     @staticmethod
+    def _check_power_setting(sd, props, name=None):
+        """检查电源管理设置：合并为一行结果"""
+        pm = NetMgr.get_power_settings(name) if name else None
+        if not pm:
+            return [("高级设置", sd["id"], sd["display"], "不支持电源管理", sd["target_display"], True)]
+
+        allow = pm.get("AllowComputerToTurnOffDevice", 0)
+        wol = (pm.get("WakeOnMagicPacket", 0), pm.get("WakeOnPattern", 0))
+        allow_ok = (allow != 2)
+        wol_ok = not any(v == 2 for v in wol)
+        cur = f"{'关闭✅' if allow in (0,1) else '开启❌'}, {'唤醒关✅' if wol_ok else '唤醒开❌'}"
+        return [("高级设置", sd["id"], sd["display"], cur, sd["target_display"], allow_ok and wol_ok)]
+
+    @staticmethod
+    def _apply_power_setting(name, sd, props):
+        ok, msg = NetMgr.disable_power_saving(name)
+        return ("电源管理 → 节能已关闭", ok, msg)
+
+    @staticmethod
     def apply_settings(name):
         """只写入注册表设置，不重启适配器。返回 [(label, ok, message), ...]"""
         log = []
@@ -586,6 +673,8 @@ $r | ConvertTo-Json -Compress
         for sd in SETTING_DEFS:
             if sd["type"] == "extreme":
                 log.append(NetMgr._apply_extreme_setting(name, sd, props))
+            elif sd["type"] == "power":
+                log.append(NetMgr._apply_power_setting(name, sd, props))
             else:
                 log.append(NetMgr._apply_int_setting(name, sd, props))
         return log
@@ -1061,6 +1150,8 @@ class App:
         self.btn_setip.pack(side=tk.LEFT, padx=2)
         self.btn_rename = ttk.Button(bf, text="✏ 重命名", command=self.rename)
         self.btn_rename.pack(side=tk.LEFT, padx=2)
+        self.btn_pm = ttk.Button(bf, text="🔌 电源管理", command=self._on_toggle_pm)
+        self.btn_pm.pack(side=tk.LEFT, padx=2)
 
         ttk.Separator(bf, orient=tk.VERTICAL).pack(side=tk.RIGHT, fill=tk.Y, padx=8)
         ttk.Button(bf, text="全选", style="Small.TButton",
@@ -1664,8 +1755,92 @@ class App:
         self._idle()
         self.root.after(1200, self.refresh)
 
-    # ── 辅助 ──
+    def _on_toggle_pm(self):
+        """对所选适配器批量关闭/恢复电源管理"""
+        sel = self._selected()
+        if not sel:
+            messagebox.showwarning("提示", "请至少选择一个适配器")
+            return
 
+        pm = NetMgr.get_power_settings(sel[0])
+        if not pm:
+            self._log(f"{sel[0]}: 不支持电源管理")
+            return
+
+        def task(enable):
+            results = []
+            for n in sel:
+                label = "恢复" if enable else "关闭"
+                self._busy(f"正在{label} {n} 电源管理...")
+                if enable:
+                    ok, msg = NetMgr.enable_power_saving(n)
+                else:
+                    ok, msg = NetMgr.disable_power_saving(n)
+                results.append((n, ok, msg))
+            self.root.after(0, self._show_pm_result, results)
+
+        def on_disable():
+            dlg.destroy()
+            Thread(target=lambda: task(False), daemon=True).start()
+
+        def on_enable():
+            dlg.destroy()
+            Thread(target=lambda: task(True), daemon=True).start()
+
+        allow_val = pm.get("AllowComputerToTurnOffDevice", 0)
+        wol_magic = pm.get("WakeOnMagicPacket", 0)
+        wol_pattern = pm.get("WakeOnPattern", 0)
+        allow_txt = {0: "不支持", 1: "关闭✅", 2: "开启❌"}.get(allow_val, str(allow_val))
+        magic_txt = {0: "不支持", 1: "关闭", 2: "开启"}.get(wol_magic, str(wol_magic))
+        pattern_txt = {0: "不支持", 1: "关闭", 2: "开启"}.get(wol_pattern, str(wol_pattern))
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title(f"电源管理 - {len(sel)} 个适配器")
+        dlg.configure(bg="#0d1117")
+        dlg.resizable(False, False)
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        f = ttk.Frame(dlg, padding=12)
+        f.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(f, text=f"已选 {len(sel)} 个适配器", font=("", 10, "bold")).pack(anchor=tk.W)
+        ttk.Label(f, text=f"参考状态 ({sel[0]}):", foreground="#8b949e").pack(anchor=tk.W)
+        for line in [
+            f"  允许关闭以节能: {allow_txt}",
+            f"  允许此设备唤醒(魔术包): {magic_txt}",
+            f"  允许此设备唤醒(模式匹配): {pattern_txt}",
+        ]:
+            ttk.Label(f, text=line, foreground="#8b949e").pack(anchor=tk.W, pady=1)
+        ttk.Separator(f, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=6)
+
+        bf = ttk.Frame(f)
+        bf.pack(fill=tk.X)
+        ttk.Button(bf, text="❌ 关闭节能", command=on_disable).pack(side=tk.LEFT, padx=2)
+        ttk.Button(bf, text="✅ 恢复节能", command=on_enable).pack(side=tk.LEFT, padx=2)
+        ttk.Button(bf, text="取消", command=dlg.destroy).pack(side=tk.RIGHT, padx=2)
+        center_dialog(dlg, self.root)
+
+    def _show_pm_result(self, results):
+        self.tres.config(state=tk.NORMAL)
+        self.tres.delete("1.0", tk.END)
+        for name, ok, msg in results:
+            self.tres.insert(tk.END, f"\U0001f4cc {name}\n", "h")
+            self.tres.insert(tk.END, f"{'═' * 80}\n", "info")
+            self.tres.insert(tk.END, f"  {'✅' if ok else '❌'} {msg}\n",
+                            "sub_ok" if ok else "sub_fail")
+        self._idle()
+        self.root.after(1200, self.refresh)
+
+    def _wrt(self, text, tag="info"):
+        self.tres.config(state=tk.NORMAL)
+        self.tres.insert(tk.END, text, tag)
+        self.tres.config(state=tk.DISABLED)
+
+    def _log(self, msg):
+        ts = datetime.now().strftime("%H:%M:%S")
+        with self._lock:
+            self.root.after(0, lambda t=ts, m=msg: self._log_do(t, m))
     def _wrt(self, text, tag="info"):
         self.tres.config(state=tk.NORMAL)
         self.tres.insert(tk.END, text, tag)
