@@ -27,7 +27,7 @@ import ctypes
 # 常量
 # ──────────────────────────────────────────────
 APP_NAME = "相机网络配置工具"
-APP_VERSION = "v2.3"
+APP_VERSION = "v2.4"
 
 # 每种设置的候选注册表关键字列表（按优先级排列）
 # 不同网卡驱动可能使用不同的关键字
@@ -219,6 +219,9 @@ try {
     $ip = '__IP__'
     $prefix = __PREFIX__
     $gateway = '__GATEWAY__'
+    # 转为静态 IP 模式（禁用 DHCP）
+    Set-NetIPInterface -InterfaceAlias $name -Dhcp Disabled -ErrorAction Stop
+    # 删除所有现有 IPv4 地址（含 APIPA 自动地址）
     Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $name -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
     if ($gateway.Length -gt 0) {
         New-NetIPAddress -InterfaceAlias $name -IPAddress $ip -PrefixLength $prefix -DefaultGateway $gateway -ErrorAction Stop | Out-Null
@@ -269,9 +272,9 @@ try {
         script = NetMgr._fill(r"""
 $ErrorActionPreference = 'Stop'
 $r = @{}
-# IPv4
-$ip = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias '__NAME__' -ErrorAction SilentlyContinue
-if ($ip) { $r['IPv4Address'] = $ip.IPAddress; $r['PrefixLength'] = $ip.PrefixLength }
+# IPv4 — 排除 APIPA（169.254.x.x 自动地址）取第一个有效 IP
+$ip = Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias '__NAME__' -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '169.254.*' }
+if ($ip) { $first = $ip | Select-Object -First 1; $r['IPv4Address'] = $first.IPAddress; $r['PrefixLength'] = $first.PrefixLength }
 else { $r['IPv4Address'] = $null; $r['PrefixLength'] = $null }
 # 高级属性
 $ap = Get-NetAdapterAdvancedProperty -Name '__NAME__' -ErrorAction SilentlyContinue
