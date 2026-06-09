@@ -27,7 +27,7 @@ import ctypes
 # 常量
 # ──────────────────────────────────────────────
 APP_NAME = "相机网络配置工具"
-APP_VERSION = "v2.4"
+APP_VERSION = "v2.4.1"
 
 # 每种设置的候选注册表关键字列表（按优先级排列）
 # 不同网卡驱动可能使用不同的关键字
@@ -219,15 +219,22 @@ try {
     $ip = '__IP__'
     $prefix = __PREFIX__
     $gateway = '__GATEWAY__'
-    # 转为静态 IP 模式（禁用 DHCP）
-    Set-NetIPInterface -InterfaceAlias $name -Dhcp Disabled -ErrorAction Stop
-    # 删除所有现有 IPv4 地址（含 APIPA 自动地址）
+    # 删除旧 IP 地址（兼容 DHCP 和静态模式）
     Get-NetIPAddress -AddressFamily IPv4 -InterfaceAlias $name -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
-    if ($gateway.Length -gt 0) {
-        New-NetIPAddress -InterfaceAlias $name -IPAddress $ip -PrefixLength $prefix -DefaultGateway $gateway -ErrorAction Stop | Out-Null
-    } else {
-        New-NetIPAddress -InterfaceAlias $name -IPAddress $ip -PrefixLength $prefix -ErrorAction Stop | Out-Null
+    # 前缀长度 → 子网掩码（用字节数组避免小端序反转）
+    $mb = [byte[]]@(0,0,0,0); $n = $prefix
+    for ($i = 0; $i -lt 4 -and $n -gt 0; $i++) {
+        if ($n -ge 8) { $mb[$i] = 255; $n -= 8 }
+        else { $mb[$i] = (0xFF -shl (8 - $n)) -band 0xFF; $n = 0 }
     }
+    $mask = [System.Net.IPAddress]$mb
+    # netsh 设置静态 IP（自动处理 DHCP→静态模式转换）
+    if ($gateway) {
+        $r = netsh interface ip set address name="$name" source=static addr=$ip mask=$($mask.IPAddressToString) gateway=$gateway 2>&1
+    } else {
+        $r = netsh interface ip set address name="$name" source=static addr=$ip mask=$($mask.IPAddressToString) gateway=none 2>&1
+    }
+    if ($LASTEXITCODE) { throw "netsh 失败: $r" }
     Write-Output 'OK'
 } catch {
     Write-Error $_.Exception.Message
