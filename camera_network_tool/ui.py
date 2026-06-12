@@ -23,6 +23,41 @@ from .net_mgr import SETTING_DEFS, INTERFACE_TYPE_ETHERNET
 from .camera_scanner import GigEVisionScanner
 from .dialogs import SetIPDialog, MultiSetIPDialog, RenameDialog
 
+
+class ToolTip:
+    """简易悬停提示"""
+    def __init__(self, widget, text, delay=1500):
+        self.widget = widget
+        self.text = text
+        self._tip = None
+        self._timer = None
+        self._delay = delay
+        widget.bind("<Enter>", self._start)
+        widget.bind("<Leave>", self._cancel)
+    def _start(self, e):
+        self._cancel(e)
+        self._timer = self.widget.after(self._delay, self._show)
+    def _cancel(self, e):
+        if self._timer:
+            self.widget.after_cancel(self._timer)
+            self._timer = None
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+    def _show(self):
+        x = self.widget.winfo_rootx() + 20
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 4
+        self._tip = tk.Toplevel(self.widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        tk.Label(self._tip, text=self.text, background="#161b22", foreground="#c9d1d9",
+                 font=("Microsoft YaHei UI", 8), padx=8, pady=3, relief="solid",
+                 borderwidth=1, highlightbackground="#30363d", highlightthickness=1).pack()
+
+def add_tooltip(w, t):
+    """为控件添加悬停提示"""
+    ToolTip(w, t)
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -176,17 +211,23 @@ class App:
 
         self.btn_chk = ttk.Button(bf, text="🔍 检查", command=self.check)
         self.btn_chk.pack(side=tk.LEFT, padx=2)
+        add_tooltip(self.btn_chk, "检查选中适配器的配置是否符合相机网络推荐值")
         self.btn_apply = ttk.Button(bf, text="⚡ 一键设置", command=self.apply,
                                     style="Accent.TButton")
         self.btn_apply.pack(side=tk.LEFT, padx=2)
+        add_tooltip(self.btn_apply, "一键应用：巨型帧/缓冲区/中断裁决等推荐配置")
         self.btn_setip = ttk.Button(bf, text="🌐 设置 IP", command=self.set_ip)
         self.btn_setip.pack(side=tk.LEFT, padx=2)
+        add_tooltip(self.btn_setip, "为选中适配器设置静态 IPv4 地址")
         self.btn_rename = ttk.Button(bf, text="✏ 重命名", command=self.rename)
         self.btn_rename.pack(side=tk.LEFT, padx=2)
+        add_tooltip(self.btn_rename, "批量重命名选中的适配器")
         self.btn_pm = ttk.Button(bf, text="🔌 电源管理", command=self._on_toggle_pm)
         self.btn_pm.pack(side=tk.LEFT, padx=2)
+        add_tooltip(self.btn_pm, "管理网卡电源节能设置（关闭/恢复）")
         self.btn_scan = ttk.Button(bf, text="📡 扫描相机", command=self.scan_cameras)
         self.btn_scan.pack(side=tk.LEFT, padx=2)
+        add_tooltip(self.btn_scan, "通过 MVS SDK 扫描 GigE 相机")
         
         pw.add(top_frame, weight=0)
 

@@ -12,7 +12,7 @@ import ctypes
 
 # ── 常量 ──
 APP_NAME = "相机网络配置工具"
-APP_VERSION = "v2.5"
+APP_VERSION = "v2.6"
 
 SETTING_DEFS = [
     {
