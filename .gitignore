@@ -6,4 +6,5 @@ dist/
 skills-lock.json
 .claude/
 *.spec
+.understand-anything/
 launch.bat
